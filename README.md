@@ -1,5 +1,8 @@
 # Micro-study-gpt
 
-Трансформер-LM, обучаемая с нуля.
-Личный учебный некоммерческий проект.
+A Transformer language model trained from scratch.
+A personal, non-commercial educational project.
 
+## License
+
+This project's code is released under the [MIT License](LICENSE).
