@@ -22,6 +22,7 @@ constraint and drives model size, batch size and context length throughout.
 
 ```
 check_cuda.py      # environment check: prints the GPU and runs a tensor on CUDA
+seed.py            # set_seed(): reproducible runs across random / numpy / torch
 requirements.txt   # pinned dependencies
 ```
 
