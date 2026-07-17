@@ -23,8 +23,12 @@ constraint and drives model size, batch size and context length throughout.
 ```
 check_cuda.py      # environment check: prints the GPU and runs a tensor on CUDA
 seed.py            # set_seed(): reproducible runs across random / numpy / torch
+dataset.txt        # stage-1 toy corpus: 60 hand-crafted sentences
 requirements.txt   # pinned dependencies
 ```
+
+The stage-1 toy dataset (`dataset.txt`) is original, hand-crafted for this project
+and covered by the repository's MIT license.
 
 ## Getting started
 
