@@ -22,6 +22,7 @@ constraint and drives model size, batch size and context length throughout.
 
 ```
 check_cuda.py         # environment check: prints the GPU and runs a tensor on CUDA
+model.py              # the model, built by hand: so far token + learned positional embeddings
 dataset.txt           # stage-1 toy corpus: 60 hand-crafted sentences
 requirements.txt      # pinned dependencies
 utils/
