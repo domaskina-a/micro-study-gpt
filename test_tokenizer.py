@@ -1,4 +1,4 @@
-from tokenizer import build_vocab, tokenize
+from tokenizer import build_vocab, decode, encode, tokenize
 
 
 def test_tokenize_lowercases():
@@ -43,3 +43,21 @@ def test_corpus_vocab_covers_every_token():
 
     stoi, _ = build_vocab(tokens)
     assert set(stoi) == set(tokens)
+
+
+def test_encode_returns_vocab_ids():
+    stoi, itos = build_vocab(tokenize("the sun shines."))
+    assert [itos[i] for i in encode("the sun.", stoi)] == ["the", "sun", "."]
+
+
+def test_decode_attaches_punctuation_to_previous_word():
+    _, itos = build_vocab(["the", "sun", "."])
+    assert decode([2, 1, 0], itos) == "the sun."
+
+
+def test_round_trip_on_corpus():
+    with open("dataset.txt", encoding="utf-8") as f:
+        text = f.read()
+
+    stoi, itos = build_vocab(tokenize(text))
+    assert tokenize(decode(encode(text, stoi), itos)) == tokenize(text)
