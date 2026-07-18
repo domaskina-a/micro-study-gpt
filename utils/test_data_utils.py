@@ -1,8 +1,8 @@
 import torch
 
 from utils.data_utils import get_batch, load_corpus
-from seed import set_seed
-from tokenizer import tokenize
+from utils.seed import set_seed
+from utils.tokenizer import tokenize
 
 
 def test_load_corpus_keeps_every_token():

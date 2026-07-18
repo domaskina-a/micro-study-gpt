@@ -1,6 +1,6 @@
 import torch
 
-from tokenizer import build_vocab, encode, tokenize
+from utils.tokenizer import build_vocab, encode, tokenize
 
 
 def load_corpus(path: str) -> tuple[torch.Tensor, dict[str, int], list[str]]:
@@ -27,7 +27,7 @@ def get_batch(
 
 
 if __name__ == "__main__":
-    from seed import set_seed
+    from utils.seed import set_seed
 
     set_seed(1337)
 

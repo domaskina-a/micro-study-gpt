@@ -21,11 +21,18 @@ constraint and drives model size, batch size and context length throughout.
 ## Project layout
 
 ```
-check_cuda.py      # environment check: prints the GPU and runs a tensor on CUDA
-seed.py            # set_seed(): reproducible runs across random / numpy / torch
-dataset.txt        # stage-1 toy corpus: 60 hand-crafted sentences
-requirements.txt   # pinned dependencies
+check_cuda.py         # environment check: prints the GPU and runs a tensor on CUDA
+dataset.txt           # stage-1 toy corpus: 60 hand-crafted sentences
+requirements.txt      # pinned dependencies
+utils/
+  seed.py             # set_seed(): reproducible runs across random / numpy / torch
+  tokenizer.py        # word-level tokenizer: vocabulary, encode / decode
+  data_utils.py       # corpus as a stream of token ids, random training batches
 ```
+
+Modules under `utils/` are imported by other code; run them from the project root
+(`python -m utils.data_utils` prints a sample batch). Scripts in the root are meant
+to be run directly.
 
 The stage-1 toy dataset (`dataset.txt`) is original, hand-crafted for this project
 and covered by the repository's MIT license.

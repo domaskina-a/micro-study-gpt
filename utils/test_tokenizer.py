@@ -1,4 +1,4 @@
-from tokenizer import build_vocab, decode, encode, tokenize
+from utils.tokenizer import build_vocab, decode, encode, tokenize
 
 
 def test_tokenize_lowercases():
