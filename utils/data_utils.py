@@ -27,12 +27,13 @@ def get_batch(
 
 
 if __name__ == "__main__":
+    from config.hyperparams import BATCH_SIZE, BLOCK_SIZE, DATASET_PATH, SEED
     from utils.seed import set_seed
 
-    set_seed(1337)
+    set_seed(SEED)
 
-    data, stoi, itos = load_corpus("dataset.txt")
-    x, y = get_batch(data, block_size=8, batch_size=4)
+    data, stoi, itos = load_corpus(DATASET_PATH)
+    x, y = get_batch(data, block_size=BLOCK_SIZE, batch_size=BATCH_SIZE)
 
     print(f"corpus: {len(data)} tokens, vocab {len(itos)}")
     print(f"x: {tuple(x.shape)}, y: {tuple(y.shape)}\n")

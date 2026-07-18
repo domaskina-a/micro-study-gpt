@@ -27,15 +27,22 @@ class GPT(nn.Module):
 
 
 if __name__ == "__main__":
+    from config.hyperparams import (
+        BATCH_SIZE,
+        BLOCK_SIZE,
+        D_MODEL,
+        DATASET_PATH,
+        SEED,
+    )
     from utils.data_utils import get_batch, load_corpus
     from utils.seed import set_seed
 
-    set_seed(1337)
+    set_seed(SEED)
 
-    data, _, itos = load_corpus("dataset.txt")
-    x, _ = get_batch(data, block_size=8, batch_size=4)
+    data, _, itos = load_corpus(DATASET_PATH)
+    x, _ = get_batch(data, block_size=BLOCK_SIZE, batch_size=BATCH_SIZE)
 
-    model = GPT(vocab_size=len(itos), block_size=8, d_model=32)
+    model = GPT(vocab_size=len(itos), block_size=BLOCK_SIZE, d_model=D_MODEL)
     out = model(x)
 
     print(f"ids: {tuple(x.shape)} -> embeddings: {tuple(out.shape)}")

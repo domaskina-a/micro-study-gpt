@@ -25,6 +25,8 @@ check_cuda.py         # environment check: prints the GPU and runs a tensor on C
 model.py              # the model, built by hand: so far token + learned positional embeddings
 dataset.txt           # stage-1 toy corpus: 60 hand-crafted sentences
 requirements.txt      # pinned dependencies
+config/
+  hyperparams.py      # seed, dataset path, model and training sizes
 utils/
   seed.py             # set_seed(): reproducible runs across random / numpy / torch
   tokenizer.py        # word-level tokenizer: vocabulary, encode / decode
