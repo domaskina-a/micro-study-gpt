@@ -91,24 +91,18 @@ if __name__ == "__main__":
     set_seed(SEED)
 
     data, _, itos = load_corpus(DATASET_PATH)
-    x, y = get_batch(data, block_size=BLOCK_SIZE, batch_size=BATCH_SIZE)
+    x, _ = get_batch(data, block_size=BLOCK_SIZE, batch_size=BATCH_SIZE)
 
-    vocab_size = len(itos)
     model = GPT(
-        vocab_size=vocab_size,
+        vocab_size=len(itos),
         block_size=BLOCK_SIZE,
         d_model=D_MODEL,
         ffn_multiplier=FFN_MULTIPLIER,
     )
     logits = model(x)
 
-    # cross_entropy wants a flat list of predictions, so the batch and time axes
-    # are folded together.
-    loss = F.cross_entropy(logits.reshape(-1, vocab_size), y.reshape(-1))
-
     print(f"ids: {tuple(x.shape)} -> logits: {tuple(logits.shape)}")
     print(f"parameters: {sum(p.numel() for p in model.parameters())}")
-    print(f"loss: {loss.item():.4f} (untrained baseline {math.log(vocab_size):.4f})")
 
     # Attention table of the first sequence: rows ask, columns answer. Untrained
     # weights, so the point is the causal shape, not the numbers.
@@ -126,15 +120,3 @@ if __name__ == "__main__":
             for j in range(len(tokens))
         )
         print(f"{token[:width - 1]:>{width}}" + row)
-
-    # The full logit table is (seq_len, vocab_size), too wide to read, so only
-    # the strongest guesses are shown. Untrained, they are near-uniform noise.
-    top_probs, top_ids = F.softmax(logits[0].detach(), dim=-1).topk(3, dim=-1)
-
-    print("\nnext-token prediction (top-3 of the vocabulary):")
-    for i, token in enumerate(tokens):
-        guesses = "  ".join(
-            f"{itos[j]} {p:.3f}"
-            for j, p in zip(top_ids[i].tolist(), top_probs[i].tolist())
-        )
-        print(f"{token[:width - 1]:>{width}} -> {guesses:<40} target: {itos[y[0, i].item()]}")

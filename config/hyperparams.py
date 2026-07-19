@@ -9,3 +9,6 @@ FFN_MULTIPLIER = 4  # hidden width of the feed-forward layer: d_model -> d_model
 
 # Training
 BATCH_SIZE = 4
+LEARNING_RATE = 3e-3  # the model is tiny, so it tolerates a much larger step than a real GPT
+MAX_STEPS = 500
+LOG_INTERVAL = 50
