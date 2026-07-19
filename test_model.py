@@ -1,5 +1,8 @@
+import math
+
 import pytest
 import torch
+import torch.nn.functional as F
 
 from model import GPT, CausalSelfAttention
 
@@ -11,13 +14,13 @@ def _causal_mask(seq_len: int) -> torch.Tensor:
 def test_output_shape():
     model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
     out = model(torch.zeros(4, 8, dtype=torch.long))
-    assert out.shape == (4, 8, 32)
+    assert out.shape == (4, 8, 50)
 
 
 def test_shorter_sequences_are_allowed():
     model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
     out = model(torch.zeros(4, 3, dtype=torch.long))
-    assert out.shape == (4, 3, 32)
+    assert out.shape == (4, 3, 50)
 
 
 def test_sequence_longer_than_block_size_is_rejected():
@@ -117,12 +120,12 @@ def test_ffn_hidden_layer_is_widened_by_the_multiplier():
 
 def test_relu_zeroes_the_hidden_layer():
     # A strongly negative bias pushes every hidden unit below zero, so ReLU
-    # zeroes them and nothing but the output bias survives.
+    # zeroes them and nothing but the output bias reaches the head.
     model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
     with torch.no_grad():
         model.ffn_in.bias.fill_(-1e4)
     out = model(torch.zeros(1, 4, dtype=torch.long))
-    assert torch.allclose(out[0, 0], model.ffn_out.bias, atol=1e-6)
+    assert torch.allclose(out[0, 0], model.lm_head(model.ffn_out.bias), atol=1e-6)
 
 
 def test_ffn_receives_gradients():
@@ -130,3 +133,43 @@ def test_ffn_receives_gradients():
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
     assert model.ffn_in.weight.grad.abs().sum() > 0
     assert model.ffn_out.weight.grad.abs().sum() > 0
+
+
+def test_loss_of_an_untrained_model_is_the_uniform_baseline():
+    # An untrained head has no preference, so every token of the vocabulary is
+    # about equally likely and cross-entropy sits near ln(vocab_size).
+    vocab_size = 200
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, ffn_multiplier=4)
+    ids = torch.randint(vocab_size, (16, 8))
+
+    logits = model(ids)
+    loss = F.cross_entropy(logits.reshape(-1, vocab_size), ids.reshape(-1))
+
+    assert loss.item() == pytest.approx(math.log(vocab_size), abs=0.2)
+
+
+def test_loss_drops_when_the_head_predicts_the_target():
+    # Boosting the logit of the correct next token must lower the loss.
+    vocab_size = 50
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, ffn_multiplier=4)
+    ids = torch.randint(vocab_size, (4, 8))
+    targets = ids.reshape(-1)
+
+    logits = model(ids).reshape(-1, vocab_size)
+    before = F.cross_entropy(logits, targets)
+
+    logits = logits.clone()
+    logits[torch.arange(targets.numel()), targets] += 10.0
+    assert F.cross_entropy(logits, targets) < before
+
+
+def test_the_head_receives_gradients():
+    vocab_size = 50
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, ffn_multiplier=4)
+    ids = torch.randint(vocab_size, (4, 8))
+
+    logits = model(ids)
+    F.cross_entropy(logits.reshape(-1, vocab_size), ids.reshape(-1)).backward()
+
+    assert model.lm_head.weight.grad.abs().sum() > 0
+    assert model.token_embedding.weight.grad.abs().sum() > 0
