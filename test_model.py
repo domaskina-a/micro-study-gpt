@@ -173,3 +173,42 @@ def test_the_head_receives_gradients():
 
     assert model.lm_head.weight.grad.abs().sum() > 0
     assert model.token_embedding.weight.grad.abs().sum() > 0
+
+
+def test_generate_extends_the_prompt():
+    model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
+    prompt = torch.randint(50, (1, 3))
+
+    out = model.generate(prompt, max_new_tokens=5)
+
+    assert out.shape == (1, 8)
+    assert torch.equal(out[:, :3], prompt)
+
+
+def test_generate_is_deterministic():
+    # Greedy decoding takes the argmax, so nothing is left to chance: the same
+    # prompt through the same weights must give the very same continuation.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
+    prompt = torch.randint(50, (1, 3))
+
+    assert torch.equal(
+        model.generate(prompt, max_new_tokens=5), model.generate(prompt, max_new_tokens=5)
+    )
+
+
+def test_generate_slides_the_window_past_block_size():
+    # The prompt alone already fills the window, and every new token pushes it
+    # further; without the sliding window forward would hit its block_size assert.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
+    prompt = torch.randint(50, (1, 8))
+
+    assert model.generate(prompt, max_new_tokens=4).shape == (1, 12)
+
+
+def test_generate_leaves_no_gradients_behind():
+    model = GPT(vocab_size=50, block_size=8, d_model=32, ffn_multiplier=4)
+
+    out = model.generate(torch.randint(50, (1, 3)), max_new_tokens=5)
+
+    assert not out.requires_grad
+    assert model.lm_head.weight.grad is None

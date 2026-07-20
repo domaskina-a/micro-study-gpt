@@ -11,12 +11,15 @@ from config.hyperparams import (
     FFN_MULTIPLIER,
     LEARNING_RATE,
     LOG_INTERVAL,
+    MAX_NEW_TOKENS,
     MAX_STEPS,
+    PROMPT,
     SEED,
 )
 from model import GPT
 from utils.data_utils import get_batch, load_corpus
 from utils.seed import set_seed
+from utils.tokenizer import decode, encode
 
 
 def train(model, data, loss_fn, optimizer):
@@ -46,8 +49,8 @@ def train(model, data, loss_fn, optimizer):
 
 
 def setup_and_train():
-    """Full training pipeline. Returns: model."""
-    data, _, itos = load_corpus(DATASET_PATH)
+    """Full training pipeline. Returns: model, stoi, itos."""
+    data, stoi, itos = load_corpus(DATASET_PATH)
     vocab_size = len(itos)
     print(f"corpus: {len(data)} tokens, vocab {vocab_size}")
     print(f"untrained baseline: {math.log(vocab_size):.4f}\n")
@@ -62,9 +65,14 @@ def setup_and_train():
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
-    return train(model, data, loss_fn, optimizer)
+    return train(model, data, loss_fn, optimizer), stoi, itos
 
 
 if __name__ == "__main__":
     set_seed(SEED)
-    model = setup_and_train()
+    model, stoi, itos = setup_and_train()
+
+    print("\ngeneration:")
+    prompt_ids = torch.tensor([encode(PROMPT, stoi)])
+    generated = model.generate(prompt_ids, MAX_NEW_TOKENS)
+    print(decode(generated[0].tolist(), itos))

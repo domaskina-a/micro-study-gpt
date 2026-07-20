@@ -75,6 +75,22 @@ class GPT(nn.Module):
         # Returns (batch, seq_len, vocab_size) logits
         return self.lm_head(x)
 
+    def generate(self, token_ids: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
+        """Greedy decoding: append the most likely next token, max_new_tokens times.
+
+        Takes and returns ids, (batch, seq_len) -> (batch, seq_len + max_new_tokens);
+        encoding and decoding stay outside the model.
+        """
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                # Sliding window: the model only ever sees the last block_size
+                # tokens, which is the window its positional embeddings cover.
+                logits = self(token_ids[:, -self.block_size :])
+                next_ids = logits[:, -1].argmax(dim=-1, keepdim=True)
+                token_ids = torch.cat([token_ids, next_ids], dim=1)
+
+        return token_ids
+
 
 if __name__ == "__main__":
     from config.hyperparams import (

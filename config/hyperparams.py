@@ -12,3 +12,7 @@ BATCH_SIZE = 4
 LEARNING_RATE = 3e-3  # the model is tiny, so it tolerates a much larger step than a real GPT
 MAX_STEPS = 500
 LOG_INTERVAL = 50
+
+# Generation
+PROMPT = "the sun"
+MAX_NEW_TOKENS = 20
