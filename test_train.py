@@ -11,7 +11,7 @@ def _setup(monkeypatch, steps: int, lr: float = 3e-3):
     monkeypatch.setattr(train, "MAX_STEPS", steps)
     monkeypatch.setattr(train, "LOG_INTERVAL", steps + 1)
 
-    model = GPT(vocab_size=VOCAB_SIZE, block_size=8, d_model=32, ffn_multiplier=4)
+    model = GPT(vocab_size=VOCAB_SIZE, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # A short cycle repeated over and over: the model can only lower the loss by

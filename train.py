@@ -13,6 +13,7 @@ from config.hyperparams import (
     LOG_INTERVAL,
     MAX_NEW_TOKENS,
     MAX_STEPS,
+    NUM_HEADS,
     PROMPT,
     SEED,
 )
@@ -59,6 +60,7 @@ def setup_and_train():
         vocab_size=vocab_size,
         block_size=BLOCK_SIZE,
         d_model=D_MODEL,
+        num_heads=NUM_HEADS,
         ffn_multiplier=FFN_MULTIPLIER,
     )
 

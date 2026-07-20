@@ -13,20 +13,31 @@ def causal_mask(seq_len: int, device: torch.device | None = None) -> torch.Tenso
 
 
 class CausalSelfAttention(nn.Module):
-    """Single-head self-attention"""
-    # TODO: split the projections into several heads
+    """Multi-head self-attention"""
 
-    def __init__(self, d_model: int):
+    def __init__(self, d_model: int, num_heads: int):
         super().__init__()
-        self.head_dim = d_model
+        assert d_model % num_heads == 0, (
+            f"d_model={d_model} must split evenly across num_heads={num_heads}."
+        )
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
 
+        # One projection per role, shared by every head: the heads are carved out
+        # of its output, so head count does not change the parameter count.
         self.query = nn.Linear(d_model, d_model)
         self.key = nn.Linear(d_model, d_model)
         self.value = nn.Linear(d_model, d_model)
         self.proj = nn.Linear(d_model, d_model)
 
+    def split_heads(self, x: torch.Tensor) -> torch.Tensor:
+        """(batch, seq_len, d_model) -> (batch, num_heads, seq_len, head_dim)"""
+        batch, seq_len, _ = x.shape
+        return x.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
     def weights(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        q, k = self.query(x), self.key(x)
+        """Attention weights per head, (batch, num_heads, seq_len, seq_len)."""
+        q, k = self.split_heads(self.query(x)), self.split_heads(self.key(x))
 
         # Scaling by sqrt(head_dim) keeps the dot products from growing with
         # dimension, which would otherwise saturate the softmax.
@@ -37,22 +48,34 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """mask: (seq_len, seq_len), True where a token must not look."""
-        return self.proj(self.weights(x, mask) @ self.value(x))
+        batch, seq_len, _ = x.shape
+        heads = self.weights(x, mask) @ self.split_heads(self.value(x))
+
+        # Concatenate the heads back into one vector per token.
+        merged = heads.transpose(1, 2).reshape(batch, seq_len, -1)
+        return self.proj(merged)
 
 
 class GPT(nn.Module):
     """Decoder-only language model"""
-    # Now token + learned positional embeddings, summed, then single-head
+    # Now token + learned positional embeddings, summed, then multi-head
     # causal self-attention, then a feed-forward layer, then logits
     # TODO: try fixed sinusoidal positional encoding instead of learned
 
-    def __init__(self, vocab_size: int, block_size: int, d_model: int, ffn_multiplier: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        block_size: int,
+        d_model: int,
+        num_heads: int,
+        ffn_multiplier: int,
+    ):
         super().__init__()
         self.block_size = block_size
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = nn.Embedding(block_size, d_model)
-        self.attention = CausalSelfAttention(d_model)
+        self.attention = CausalSelfAttention(d_model, num_heads)
         self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
         self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
@@ -99,6 +122,7 @@ if __name__ == "__main__":
         D_MODEL,
         DATASET_PATH,
         FFN_MULTIPLIER,
+        NUM_HEADS,
         SEED,
     )
     from utils.data_utils import get_batch, load_corpus
@@ -113,6 +137,7 @@ if __name__ == "__main__":
         vocab_size=len(itos),
         block_size=BLOCK_SIZE,
         d_model=D_MODEL,
+        num_heads=NUM_HEADS,
         ffn_multiplier=FFN_MULTIPLIER,
     )
     logits = model(x)
@@ -120,15 +145,15 @@ if __name__ == "__main__":
     print(f"ids: {tuple(x.shape)} -> logits: {tuple(logits.shape)}")
     print(f"parameters: {sum(p.numel() for p in model.parameters())}")
 
-    # Attention table of the first sequence: rows ask, columns answer. Untrained
-    # weights, so the point is the causal shape, not the numbers.
+    # Attention table of the first sequence, first head: rows ask, columns answer.
+    # Untrained weights, so the point is the causal shape, not the numbers.
     with torch.no_grad():
         embedded = model.embed(x[:1])
-        weights = model.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0]
+        weights = model.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
 
     tokens = [itos[i] for i in x[0].tolist()]
     width = 7
-    print("\nattention weights (row attends to column):")
+    print("\nattention weights of head 0 (row attends to column):")
     print(" " * width + "".join(f"{t[:width - 1]:>{width}}" for t in tokens))
     for i, token in enumerate(tokens):
         row = "".join(
