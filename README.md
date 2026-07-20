@@ -57,41 +57,14 @@ Optionally isolate the dependencies in a virtual environment first:
 python -m venv .venv && source .venv/bin/activate
 ```
 
-## Stage 1 — a toy model, everything by hand
-
-The first model is deliberately tiny: one attention head, one FFN, no LayerNorm and
-no residual connections yet, trained on the 60-sentence toy corpus. It exists to show
-the training loop and the internals of a Transformer block working end to end.
+## Training
 
 ```bash
 python train.py
 ```
 
-Run with the fixed seed (`SEED = 1337`), 500 steps, `d_model = 32`, `block_size = 8`,
-`batch_size = 4`:
-
-| | Loss |
-|---|---|
-| Uniform-guess baseline, `ln(88)` | 4.4773 |
-| Step 1 | 4.4461 |
-| Step 500 | 1.2353 |
-
-The loss starts at the baseline — an untrained model spreads its probability evenly
-over the 88-word vocabulary — and drops well below it, so the model is genuinely
-learning the corpus. The logged value is a single batch, not an average, so it
-bounces between steps; a proper evaluation loop over train and validation splits
-comes later.
-
-Greedy generation from the prompt `the sun`:
-
-```
-the sun. the sun. the sun. the sky. the sky. the sky. the sky. the
-```
-
-The model has clearly picked up the sentence template of the corpus, but greedy
-decoding always takes the single most likely token, so on a corpus this small it
-falls into a loop. That is expected rather than a defect: temperature and top-k
-sampling are added in a later stage.
+Trains on the toy corpus and generates from a prompt. With the pinned seed the loss
+drops from 4.4773 (the uniform-guess baseline, `ln(88)`) to 1.2353 over 500 steps.
 
 ## License
 
