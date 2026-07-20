@@ -58,8 +58,9 @@ class CausalSelfAttention(nn.Module):
 
 class GPT(nn.Module):
     """Decoder-only language model"""
-    # Now token + learned positional embeddings, summed, then multi-head
-    # causal self-attention, then a feed-forward layer, then logits
+    # Now token + learned positional embeddings, summed, then a pre-norm block
+    # (attention and feed-forward, each normalised on input and added back to
+    # the residual stream), then a final norm and logits
     # TODO: try fixed sinusoidal positional encoding instead of learned
 
     def __init__(
@@ -75,9 +76,12 @@ class GPT(nn.Module):
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = nn.Embedding(block_size, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
         self.attention = CausalSelfAttention(d_model, num_heads)
+        self.norm2 = nn.LayerNorm(d_model)
         self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
         self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
+        self.norm_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
 
     def embed(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -92,11 +96,17 @@ class GPT(nn.Module):
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         x = self.embed(token_ids)
-        x = self.attention(x, causal_mask(x.shape[1], x.device))
-        x = self.ffn_out(F.relu(self.ffn_in(x)))
+        mask = causal_mask(x.shape[1], x.device)
+
+        normed = self.norm1(x)
+        attention_output = self.attention(normed, mask)
+        x = x + attention_output
+
+        ffn_output = self.ffn_out(F.relu(self.ffn_in(self.norm2(x))))
+        x = x + ffn_output
 
         # Returns (batch, seq_len, vocab_size) logits
-        return self.lm_head(x)
+        return self.lm_head(self.norm_f(x))
 
     def generate(self, token_ids: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
         """Greedy decoding: append the most likely next token, max_new_tokens times.

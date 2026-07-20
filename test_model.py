@@ -2,6 +2,7 @@ import math
 
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from model import GPT, CausalSelfAttention
@@ -157,12 +158,17 @@ def test_ffn_hidden_layer_is_widened_by_the_multiplier():
 
 def test_relu_zeroes_the_hidden_layer():
     # A strongly negative bias pushes every hidden unit below zero, so ReLU
-    # zeroes them and nothing but the output bias reaches the head.
+    # zeroes them and the ffn contributes nothing but its output bias. Attention
+    # is silenced too, leaving the embeddings to carry the residual stream.
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     with torch.no_grad():
         model.ffn_in.bias.fill_(-1e4)
-    out = model(torch.zeros(1, 4, dtype=torch.long))
-    assert torch.allclose(out[0, 0], model.lm_head(model.ffn_out.bias), atol=1e-6)
+        model.attention.proj.weight.zero_()
+        model.attention.proj.bias.zero_()
+
+    ids = torch.zeros(1, 4, dtype=torch.long)
+    expected = model.lm_head(model.norm_f(model.embed(ids) + model.ffn_out.bias))
+    assert torch.allclose(model(ids), expected, atol=1e-6)
 
 
 def test_ffn_receives_gradients():
@@ -172,9 +178,52 @@ def test_ffn_receives_gradients():
     assert model.ffn_out.weight.grad.abs().sum() > 0
 
 
+def test_layernorm_matches_the_formula():
+    # nn.LayerNorm does the work, but the formula is what the step is about:
+    # centre each token vector over its own features, scale to unit variance,
+    # then apply the learned gain and shift. Randomised so the affine part is
+    # actually exercised instead of the identity it starts as.
+    norm = nn.LayerNorm(32)
+    with torch.no_grad():
+        norm.weight.normal_()
+        norm.bias.normal_()
+
+    x = torch.randn(4, 8, 32)
+    centred = x - x.mean(dim=-1, keepdim=True)
+    variance = x.var(dim=-1, keepdim=True, unbiased=False)
+    expected = centred / torch.sqrt(variance + norm.eps) * norm.weight + norm.bias
+
+    assert torch.allclose(norm(x), expected, atol=1e-6)
+
+
+def test_silent_sublayers_leave_the_residual_stream_untouched():
+    # Zeroing both sublayer outputs turns each line of the block into x = x + 0,
+    # so the embeddings must reach the head unchanged. Catches a dropped
+    # residual, and post-norm too: that would rescale the stream on the way.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    with torch.no_grad():
+        for layer in (model.attention.proj, model.ffn_out):
+            layer.weight.zero_()
+            layer.bias.zero_()
+
+    ids = torch.randint(50, (2, 6))
+    expected = model.lm_head(model.norm_f(model.embed(ids)))
+    assert torch.allclose(model(ids), expected, atol=1e-6)
+
+
+def test_the_norms_receive_gradients():
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
+    for norm in (model.norm1, model.norm2, model.norm_f):
+        assert norm.weight.grad.abs().sum() > 0
+        assert norm.bias.grad.abs().sum() > 0
+
+
 def test_loss_of_an_untrained_model_is_the_uniform_baseline():
     # An untrained head has no preference, so every token of the vocabulary is
-    # about equally likely and cross-entropy sits near ln(vocab_size).
+    # about equally likely and cross-entropy sits near ln(vocab_size). The final
+    # norm keeps the head's input in scale, but the learned gain still spreads
+    # the logits a little, so the loss sits slightly above the baseline.
     vocab_size = 200
     model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     ids = torch.randint(vocab_size, (16, 8))
@@ -182,7 +231,7 @@ def test_loss_of_an_untrained_model_is_the_uniform_baseline():
     logits = model(ids)
     loss = F.cross_entropy(logits.reshape(-1, vocab_size), ids.reshape(-1))
 
-    assert loss.item() == pytest.approx(math.log(vocab_size), abs=0.2)
+    assert loss.item() == pytest.approx(math.log(vocab_size), abs=0.35)
 
 
 def test_loss_drops_when_the_head_predicts_the_target():
