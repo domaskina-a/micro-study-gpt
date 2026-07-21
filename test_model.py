@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import GPT, CausalSelfAttention
+from model import GPT, CausalSelfAttention, RotaryPositionalEmbedding
 
 
 def _causal_mask(seq_len: int) -> torch.Tensor:
@@ -31,9 +31,23 @@ def test_sequence_longer_than_block_size_is_rejected():
 
 
 def test_position_changes_the_vector_of_the_same_token():
+    # The same token twice, each time with a different past to look at, so the
+    # rotation shifts the attention weights and the two outputs come out apart.
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
-    out = model(torch.full((1, 2), 7, dtype=torch.long))
-    assert not torch.allclose(out[0, 0], out[0, 1])
+    out = model(torch.tensor([[3, 7, 7]]))
+    assert not torch.allclose(out[0, 1], out[0, 2])
+
+
+def test_values_carry_no_position():
+    # The flip side, and a property worth pinning down: only q and k are
+    # rotated, values are not. A run of one repeated token therefore mixes
+    # identical values in whatever proportion the weights ask for and returns
+    # that same vector at every place. Position rides on the attention weights
+    # alone — which is exactly what makes it relative. A learned position table
+    # added to the embeddings would have pulled these two apart instead.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    out = model(torch.full((1, 4), 7, dtype=torch.long))
+    assert torch.allclose(out[0, 0], out[0, 3], atol=1e-6)
 
 
 def test_same_token_at_the_same_position_is_identical_across_the_batch():
@@ -43,11 +57,10 @@ def test_same_token_at_the_same_position_is_identical_across_the_batch():
     assert torch.allclose(out[0], out[3], atol=1e-6)
 
 
-def test_both_embedding_tables_receive_gradients():
+def test_the_embedding_table_receives_gradients():
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
     assert model.token_embedding.weight.grad.abs().sum() > 0
-    assert model.position_embedding.weight.grad.abs().sum() > 0
 
 
 def test_a_token_does_not_see_the_future():
@@ -80,13 +93,13 @@ def test_attention_receives_gradients():
 
 
 def test_attention_keeps_the_shape_of_its_input():
-    attention = CausalSelfAttention(d_model=32, num_heads=4)
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
     x = torch.randn(4, 8, 32)
     assert attention(x, _causal_mask(8)).shape == x.shape
 
 
 def test_heads_carve_up_the_model_dimension():
-    attention = CausalSelfAttention(d_model=32, num_heads=4)
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
     assert attention.head_dim == 8
 
     weights = attention.weights(torch.randn(2, 5, 32), _causal_mask(5))
@@ -96,7 +109,7 @@ def test_heads_carve_up_the_model_dimension():
 def test_head_count_does_not_change_the_parameter_count():
     # Heads are a reshape of the same projections, not extra ones.
     def parameters(num_heads: int) -> int:
-        attention = CausalSelfAttention(d_model=32, num_heads=num_heads)
+        attention = CausalSelfAttention(d_model=32, num_heads=num_heads, block_size=8)
         return sum(p.numel() for p in attention.parameters())
 
     assert parameters(1) == parameters(8)
@@ -104,19 +117,19 @@ def test_head_count_does_not_change_the_parameter_count():
 
 def test_d_model_must_split_evenly_across_the_heads():
     with pytest.raises(AssertionError):
-        CausalSelfAttention(d_model=32, num_heads=5)
+        CausalSelfAttention(d_model=32, num_heads=5, block_size=8)
 
 
 def test_the_heads_attend_differently():
     # Each head reads its own slice of q/k, so their weights must disagree —
     # a broadcast bug would copy one head's scores over all of them.
-    attention = CausalSelfAttention(d_model=32, num_heads=4)
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
     weights = attention.weights(torch.randn(1, 5, 32), _causal_mask(5))
     assert not torch.allclose(weights[0, 0], weights[0, 1])
 
 
 def test_every_head_stays_causal():
-    attention = CausalSelfAttention(d_model=32, num_heads=4)
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
     weights = attention.weights(torch.randn(2, 6, 32), _causal_mask(6))
     assert (weights.masked_select(_causal_mask(6)) == 0).all()
 
@@ -124,7 +137,7 @@ def test_every_head_stays_causal():
 def test_a_fully_masked_row_would_collapse_the_softmax():
     # Guards the mask convention itself: True means "cannot look", so masking a
     # whole row leaves softmax with nothing to normalise and yields NaN.
-    attention = CausalSelfAttention(d_model=32, num_heads=4)
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
     mask = torch.ones(8, 8, dtype=torch.bool)
     assert attention(torch.randn(1, 8, 32), mask).isnan().any()
 
@@ -134,7 +147,7 @@ def test_attention_averages_the_values_it_can_see():
     # position i returns the mean of v[0..i]. Checked before the output
     # projection by making proj an identity. Two heads, so the expected vector
     # only comes out whole if the split and the merge are each other's inverse.
-    attention = CausalSelfAttention(d_model=4, num_heads=2)
+    attention = CausalSelfAttention(d_model=4, num_heads=2, block_size=8)
     with torch.no_grad():
         for layer in (attention.query, attention.key):
             layer.weight.zero_()
@@ -148,6 +161,69 @@ def test_attention_averages_the_values_it_can_see():
     v = attention.value(x)
     expected = torch.stack([v[0, : i + 1].mean(dim=0) for i in range(5)])
     assert torch.allclose(out[0], expected, atol=1e-6)
+
+
+def test_rope_head_dim_must_be_even():
+    with pytest.raises(AssertionError):
+        RotaryPositionalEmbedding(head_dim=7, block_size=16)
+
+
+def test_rope_adds_no_learned_parameters():
+    # The angles follow from the position instead of being trained: this is the
+    # cost a learned position table carries and the rotation does not.
+    rope = RotaryPositionalEmbedding(head_dim=8, block_size=16)
+    assert list(rope.parameters()) == []
+
+
+def test_rope_leaves_the_first_position_untouched():
+    # Position 0 turns by a zero angle, so a window always starts unrotated.
+    rope = RotaryPositionalEmbedding(head_dim=8, block_size=16)
+    x = torch.randn(1, 1, 16, 8)
+    assert torch.allclose(rope(x)[0, 0, 0], x[0, 0, 0], atol=1e-6)
+
+
+def test_rope_preserves_the_length_of_a_vector():
+    # A rotation turns a vector without stretching it, so position cannot shift
+    # the scale of the dot products the way an additive encoding would.
+    rope = RotaryPositionalEmbedding(head_dim=8, block_size=16)
+    x = torch.randn(2, 4, 16, 8)
+    assert torch.allclose(rope(x).norm(dim=-1), x.norm(dim=-1), atol=1e-5)
+
+
+def test_rope_scores_depend_only_on_the_distance_between_tokens():
+    # The defining property. Hold q and k fixed and vary only where they sit:
+    # the score for (i, j) must then equal the one for (i + 1, j + 1), i.e. the
+    # score matrix is constant along its diagonals. Attention reads the gap
+    # between two tokens, never their absolute places in the window.
+    rope = RotaryPositionalEmbedding(head_dim=8, block_size=16)
+    q = rope(torch.randn(8).expand(1, 1, 16, 8))
+    k = rope(torch.randn(8).expand(1, 1, 16, 8))
+
+    scores = q[0, 0] @ k[0, 0].T
+    assert torch.allclose(scores[:-1, :-1], scores[1:, 1:], atol=1e-5)
+
+
+def test_rope_scores_change_with_the_distance():
+    # Guards the test above from passing on a rotation that does nothing at all:
+    # constant diagonals are only meaningful if the diagonals differ.
+    rope = RotaryPositionalEmbedding(head_dim=8, block_size=16)
+    q = rope(torch.randn(8).expand(1, 1, 16, 8))
+    k = rope(torch.randn(8).expand(1, 1, 16, 8))
+
+    scores = q[0, 0] @ k[0, 0].T
+    assert not torch.allclose(scores[8, 8], scores[8, 0])
+
+
+def test_attention_reads_position_from_the_rotation():
+    # Every token here is the very same vector, so without the rotation q and k
+    # would be identical everywhere, every visible score would tie and softmax
+    # would return a flat average. The rotation is the only thing left that can
+    # tell the positions apart — this catches it not being wired into q and k.
+    attention = CausalSelfAttention(d_model=32, num_heads=4, block_size=8)
+    x = torch.randn(1, 1, 32).expand(1, 6, 32)
+
+    last_row = attention.weights(x, _causal_mask(6))[0, 0, -1]
+    assert not torch.allclose(last_row, torch.full((6,), 1 / 6), atol=1e-3)
 
 
 def test_ffn_hidden_layer_is_widened_by_the_multiplier():
@@ -167,7 +243,7 @@ def test_relu_zeroes_the_hidden_layer():
         model.attention.proj.bias.zero_()
 
     ids = torch.zeros(1, 4, dtype=torch.long)
-    expected = model.lm_head(model.norm_f(model.embed(ids) + model.ffn_out.bias))
+    expected = model.lm_head(model.norm_f(model.token_embedding(ids) + model.ffn_out.bias))
     assert torch.allclose(model(ids), expected, atol=1e-6)
 
 
@@ -207,7 +283,7 @@ def test_silent_sublayers_leave_the_residual_stream_untouched():
             layer.bias.zero_()
 
     ids = torch.randint(50, (2, 6))
-    expected = model.lm_head(model.norm_f(model.embed(ids)))
+    expected = model.lm_head(model.norm_f(model.token_embedding(ids)))
     assert torch.allclose(model(ids), expected, atol=1e-6)
 
 

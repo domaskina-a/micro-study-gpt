@@ -12,10 +12,48 @@ def causal_mask(seq_len: int, device: torch.device | None = None) -> torch.Tenso
     )
 
 
+class RotaryPositionalEmbedding(nn.Module):
+    """Rotary position embedding (RoPE): position enters as a rotation of q and k.
+
+    Rotating two vectors by angles proportional to their positions leaves their
+    dot product depending only on the angle between them, so attention reads how
+    far apart two tokens are rather than where each one sits in the window.
+    """
+
+    def __init__(self, head_dim: int, block_size: int, base: float = 10000.0):
+        super().__init__()
+        assert head_dim % 2 == 0, (
+            f"head_dim={head_dim} must be even: the rotation works on pairs of features."
+        )
+
+        # Every pair of features turns at its own rate: the fast ones separate
+        # neighbours, the slow ones stay distinguishable across the whole window.
+        exponents = torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim
+        positions = torch.arange(block_size, dtype=torch.float32)
+        angles = torch.outer(positions, 1.0 / base**exponents)
+
+        # Feature i is paired with i + head_dim // 2 rather than its neighbour,
+        # which is why every angle is needed twice.
+        angles = torch.cat([angles, angles], dim=-1)
+        self.register_buffer("cos", angles.cos(), persistent=False)
+        self.register_buffer("sin", angles.sin(), persistent=False)
+
+    @staticmethod
+    def rotate_half(x: torch.Tensor) -> torch.Tensor:
+        """The paired features, swapped and sign-flipped — the sine half of the rotation."""
+        first, second = x.chunk(2, dim=-1)
+        return torch.cat([-second, first], dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(batch, num_heads, seq_len, head_dim), rotated by position 0..seq_len-1."""
+        seq_len = x.shape[-2]
+        return x * self.cos[:seq_len] + self.rotate_half(x) * self.sin[:seq_len]
+
+
 class CausalSelfAttention(nn.Module):
     """Multi-head self-attention"""
 
-    def __init__(self, d_model: int, num_heads: int):
+    def __init__(self, d_model: int, num_heads: int, block_size: int):
         super().__init__()
         assert d_model % num_heads == 0, (
             f"d_model={d_model} must split evenly across num_heads={num_heads}."
@@ -29,6 +67,7 @@ class CausalSelfAttention(nn.Module):
         self.key = nn.Linear(d_model, d_model)
         self.value = nn.Linear(d_model, d_model)
         self.proj = nn.Linear(d_model, d_model)
+        self.rope = RotaryPositionalEmbedding(self.head_dim, block_size)
 
     def split_heads(self, x: torch.Tensor) -> torch.Tensor:
         """(batch, seq_len, d_model) -> (batch, num_heads, seq_len, head_dim)"""
@@ -38,6 +77,9 @@ class CausalSelfAttention(nn.Module):
     def weights(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Attention weights per head, (batch, num_heads, seq_len, seq_len)."""
         q, k = self.split_heads(self.query(x)), self.split_heads(self.key(x))
+
+        # Position lives here and nowhere else: q and k carry it, values do not.
+        q, k = self.rope(q), self.rope(k)
 
         # Scaling by sqrt(head_dim) keeps the dot products from growing with
         # dimension, which would otherwise saturate the softmax.
@@ -58,10 +100,9 @@ class CausalSelfAttention(nn.Module):
 
 class GPT(nn.Module):
     """Decoder-only language model"""
-    # Now token + learned positional embeddings, summed, then a pre-norm block
-    # (attention and feed-forward, each normalised on input and added back to
-    # the residual stream), then a final norm and logits
-    # TODO: try fixed sinusoidal positional encoding instead of learned
+    # Now token embeddings, then a pre-norm block (attention and feed-forward,
+    # each normalised on input and added back to the residual stream), then a
+    # final norm and logits. Position is applied inside attention as RoPE.
 
     def __init__(
         self,
@@ -75,28 +116,23 @@ class GPT(nn.Module):
         self.block_size = block_size
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = nn.Embedding(block_size, d_model)
         self.norm1 = nn.LayerNorm(d_model)
-        self.attention = CausalSelfAttention(d_model, num_heads)
+        self.attention = CausalSelfAttention(d_model, num_heads, block_size)
         self.norm2 = nn.LayerNorm(d_model)
         self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
         self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
         self.norm_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
 
-    def embed(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         _, seq_len = token_ids.shape
         assert seq_len <= self.block_size, (
             f"seq_len={seq_len} > block_size={self.block_size}: "
-            "the context must fit the positional embedding window."
+            "the context must fit the window the rotation angles cover."
         )
 
-        positions = torch.arange(seq_len, device=token_ids.device)
-        return self.token_embedding(token_ids) + self.position_embedding(positions)
-
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed(token_ids)
-        mask = causal_mask(x.shape[1], x.device)
+        x = self.token_embedding(token_ids)
+        mask = causal_mask(seq_len, token_ids.device)
 
         normed = self.norm1(x)
         attention_output = self.attention(normed, mask)
@@ -117,7 +153,7 @@ class GPT(nn.Module):
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 # Sliding window: the model only ever sees the last block_size
-                # tokens, which is the window its positional embeddings cover.
+                # tokens, which is the window the rotation angles cover.
                 logits = self(token_ids[:, -self.block_size :])
                 next_ids = logits[:, -1].argmax(dim=-1, keepdim=True)
                 token_ids = torch.cat([token_ids, next_ids], dim=1)
@@ -158,7 +194,7 @@ if __name__ == "__main__":
     # Attention table of the first sequence, first head: rows ask, columns answer.
     # Untrained weights, so the point is the causal shape, not the numbers.
     with torch.no_grad():
-        embedded = model.embed(x[:1])
+        embedded = model.token_embedding(x[:1])
         weights = model.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
 
     tokens = [itos[i] for i in x[0].tolist()]
