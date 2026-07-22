@@ -98,11 +98,39 @@ class CausalSelfAttention(nn.Module):
         return self.proj(merged)
 
 
+class TransformerBlock(nn.Module):
+    """Pre-norm block: attention, then feed-forward, each added back to the stream.
+
+    Every sublayer reads a normalised copy of the residual stream and writes its
+    result back on top of it, so the stream itself runs from the embeddings to
+    the head untouched — the path along which gradients reach the early layers
+    once these blocks are stacked.
+    """
+
+    def __init__(
+        self, d_model: int, num_heads: int, block_size: int, ffn_multiplier: int
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.attention = CausalSelfAttention(d_model, num_heads, block_size)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
+        self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        normed = self.norm1(x)
+        attention_output = self.attention(normed, mask)
+        x = x + attention_output
+
+        normed = self.norm2(x)
+        ffn_output = self.ffn_out(F.relu(self.ffn_in(normed)))
+        return x + ffn_output
+
+
 class GPT(nn.Module):
     """Decoder-only language model"""
-    # Now token embeddings, then a pre-norm block (attention and feed-forward,
-    # each normalised on input and added back to the residual stream), then a
-    # final norm and logits. Position is applied inside attention as RoPE.
+    # Token embeddings, then one transformer block, then a final norm and
+    # logits. Position is applied inside attention as RoPE.
 
     def __init__(
         self,
@@ -116,11 +144,7 @@ class GPT(nn.Module):
         self.block_size = block_size
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.attention = CausalSelfAttention(d_model, num_heads, block_size)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
-        self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
+        self.block = TransformerBlock(d_model, num_heads, block_size, ffn_multiplier)
         self.norm_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
 
@@ -132,14 +156,7 @@ class GPT(nn.Module):
         )
 
         x = self.token_embedding(token_ids)
-        mask = causal_mask(seq_len, token_ids.device)
-
-        normed = self.norm1(x)
-        attention_output = self.attention(normed, mask)
-        x = x + attention_output
-
-        ffn_output = self.ffn_out(F.relu(self.ffn_in(self.norm2(x))))
-        x = x + ffn_output
+        x = self.block(x, causal_mask(seq_len, token_ids.device))
 
         # Returns (batch, seq_len, vocab_size) logits
         return self.lm_head(self.norm_f(x))
@@ -195,7 +212,7 @@ if __name__ == "__main__":
     # Untrained weights, so the point is the causal shape, not the numbers.
     with torch.no_grad():
         embedded = model.token_embedding(x[:1])
-        weights = model.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
+        weights = model.block.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
 
     tokens = [itos[i] for i in x[0].tolist()]
     width = 7

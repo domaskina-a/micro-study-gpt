@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import GPT, CausalSelfAttention, RotaryPositionalEmbedding
+from model import GPT, CausalSelfAttention, RotaryPositionalEmbedding, TransformerBlock
 
 
 def _causal_mask(seq_len: int) -> torch.Tensor:
@@ -87,7 +87,7 @@ def test_the_first_token_depends_on_nothing_but_itself():
 def test_attention_receives_gradients():
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    attention = model.attention
+    attention = model.block.attention
     for layer in (attention.query, attention.key, attention.value, attention.proj):
         assert layer.weight.grad.abs().sum() > 0
 
@@ -228,8 +228,8 @@ def test_attention_reads_position_from_the_rotation():
 
 def test_ffn_hidden_layer_is_widened_by_the_multiplier():
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
-    assert model.ffn_in.out_features == 128
-    assert model.ffn_out.in_features == 128
+    assert model.block.ffn_in.out_features == 128
+    assert model.block.ffn_out.in_features == 128
 
 
 def test_relu_zeroes_the_hidden_layer():
@@ -238,20 +238,20 @@ def test_relu_zeroes_the_hidden_layer():
     # is silenced too, leaving the embeddings to carry the residual stream.
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     with torch.no_grad():
-        model.ffn_in.bias.fill_(-1e4)
-        model.attention.proj.weight.zero_()
-        model.attention.proj.bias.zero_()
+        model.block.ffn_in.bias.fill_(-1e4)
+        model.block.attention.proj.weight.zero_()
+        model.block.attention.proj.bias.zero_()
 
     ids = torch.zeros(1, 4, dtype=torch.long)
-    expected = model.lm_head(model.norm_f(model.token_embedding(ids) + model.ffn_out.bias))
+    expected = model.lm_head(model.norm_f(model.token_embedding(ids) + model.block.ffn_out.bias))
     assert torch.allclose(model(ids), expected, atol=1e-6)
 
 
 def test_ffn_receives_gradients():
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    assert model.ffn_in.weight.grad.abs().sum() > 0
-    assert model.ffn_out.weight.grad.abs().sum() > 0
+    assert model.block.ffn_in.weight.grad.abs().sum() > 0
+    assert model.block.ffn_out.weight.grad.abs().sum() > 0
 
 
 def test_layernorm_matches_the_formula():
@@ -278,7 +278,7 @@ def test_silent_sublayers_leave_the_residual_stream_untouched():
     # residual, and post-norm too: that would rescale the stream on the way.
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     with torch.no_grad():
-        for layer in (model.attention.proj, model.ffn_out):
+        for layer in (model.block.attention.proj, model.block.ffn_out):
             layer.weight.zero_()
             layer.bias.zero_()
 
@@ -287,10 +287,31 @@ def test_silent_sublayers_leave_the_residual_stream_untouched():
     assert torch.allclose(model(ids), expected, atol=1e-6)
 
 
+def test_block_keeps_the_shape_of_its_input():
+    # What makes the block stackable: it hands back what it was given.
+    block = TransformerBlock(d_model=32, num_heads=4, block_size=8, ffn_multiplier=4)
+    x = torch.randn(4, 8, 32)
+    assert block(x, _causal_mask(8)).shape == x.shape
+
+
+def test_both_sublayers_write_into_the_same_stream():
+    # Silencing attention alone must leave the feed-forward reading the stream
+    # the embeddings put there, not a rewritten one: the second line of the
+    # block adds to x rather than replacing it.
+    block = TransformerBlock(d_model=32, num_heads=4, block_size=8, ffn_multiplier=4)
+    with torch.no_grad():
+        block.attention.proj.weight.zero_()
+        block.attention.proj.bias.zero_()
+
+    x = torch.randn(2, 6, 32)
+    expected = x + block.ffn_out(F.relu(block.ffn_in(block.norm2(x))))
+    assert torch.allclose(block(x, _causal_mask(6)), expected, atol=1e-6)
+
+
 def test_the_norms_receive_gradients():
     model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    for norm in (model.norm1, model.norm2, model.norm_f):
+    for norm in (model.block.norm1, model.block.norm2, model.norm_f):
         assert norm.weight.grad.abs().sum() > 0
         assert norm.bias.grad.abs().sum() > 0
 
