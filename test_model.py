@@ -13,19 +13,19 @@ def _causal_mask(seq_len: int) -> torch.Tensor:
 
 
 def test_output_shape():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     out = model(torch.zeros(4, 8, dtype=torch.long))
     assert out.shape == (4, 8, 50)
 
 
 def test_shorter_sequences_are_allowed():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     out = model(torch.zeros(4, 3, dtype=torch.long))
     assert out.shape == (4, 3, 50)
 
 
 def test_sequence_longer_than_block_size_is_rejected():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     with pytest.raises(AssertionError):
         model(torch.zeros(4, 9, dtype=torch.long))
 
@@ -33,7 +33,7 @@ def test_sequence_longer_than_block_size_is_rejected():
 def test_position_changes_the_vector_of_the_same_token():
     # The same token twice, each time with a different past to look at, so the
     # rotation shifts the attention weights and the two outputs come out apart.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     out = model(torch.tensor([[3, 7, 7]]))
     assert not torch.allclose(out[0, 1], out[0, 2])
 
@@ -45,26 +45,26 @@ def test_values_carry_no_position():
     # that same vector at every place. Position rides on the attention weights
     # alone — which is exactly what makes it relative. A learned position table
     # added to the embeddings would have pulled these two apart instead.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     out = model(torch.full((1, 4), 7, dtype=torch.long))
     assert torch.allclose(out[0, 0], out[0, 3], atol=1e-6)
 
 
 def test_same_token_at_the_same_position_is_identical_across_the_batch():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     out = model(torch.full((4, 8), 7, dtype=torch.long))
     # allclose, not equal: batched matmul may sum in a different order per row.
     assert torch.allclose(out[0], out[3], atol=1e-6)
 
 
 def test_the_embedding_table_receives_gradients():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
     assert model.token_embedding.weight.grad.abs().sum() > 0
 
 
 def test_a_token_does_not_see_the_future():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     ids = torch.randint(50, (1, 8))
     out = model(ids)
 
@@ -76,7 +76,7 @@ def test_a_token_does_not_see_the_future():
 def test_the_first_token_depends_on_nothing_but_itself():
     # Position 0 has no past to attend to, so the rest of the window cannot
     # reach it — this also catches a mask that hides the diagonal itself.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     ids = torch.randint(50, (1, 8))
     out = model(ids)
 
@@ -85,9 +85,9 @@ def test_the_first_token_depends_on_nothing_but_itself():
 
 
 def test_attention_receives_gradients():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    attention = model.block.attention
+    attention = model.blocks[0].attention
     for layer in (attention.query, attention.key, attention.value, attention.proj):
         assert layer.weight.grad.abs().sum() > 0
 
@@ -227,31 +227,31 @@ def test_attention_reads_position_from_the_rotation():
 
 
 def test_ffn_hidden_layer_is_widened_by_the_multiplier():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
-    assert model.block.ffn_in.out_features == 128
-    assert model.block.ffn_out.in_features == 128
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
+    assert model.blocks[0].ffn_in.out_features == 128
+    assert model.blocks[0].ffn_out.in_features == 128
 
 
 def test_relu_zeroes_the_hidden_layer():
     # A strongly negative bias pushes every hidden unit below zero, so ReLU
     # zeroes them and the ffn contributes nothing but its output bias. Attention
     # is silenced too, leaving the embeddings to carry the residual stream.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     with torch.no_grad():
-        model.block.ffn_in.bias.fill_(-1e4)
-        model.block.attention.proj.weight.zero_()
-        model.block.attention.proj.bias.zero_()
+        model.blocks[0].ffn_in.bias.fill_(-1e4)
+        model.blocks[0].attention.proj.weight.zero_()
+        model.blocks[0].attention.proj.bias.zero_()
 
     ids = torch.zeros(1, 4, dtype=torch.long)
-    expected = model.lm_head(model.norm_f(model.token_embedding(ids) + model.block.ffn_out.bias))
+    expected = model.lm_head(model.norm_f(model.token_embedding(ids) + model.blocks[0].ffn_out.bias))
     assert torch.allclose(model(ids), expected, atol=1e-6)
 
 
 def test_ffn_receives_gradients():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    assert model.block.ffn_in.weight.grad.abs().sum() > 0
-    assert model.block.ffn_out.weight.grad.abs().sum() > 0
+    assert model.blocks[0].ffn_in.weight.grad.abs().sum() > 0
+    assert model.blocks[0].ffn_out.weight.grad.abs().sum() > 0
 
 
 def test_layernorm_matches_the_formula():
@@ -276,9 +276,9 @@ def test_silent_sublayers_leave_the_residual_stream_untouched():
     # Zeroing both sublayer outputs turns each line of the block into x = x + 0,
     # so the embeddings must reach the head unchanged. Catches a dropped
     # residual, and post-norm too: that would rescale the stream on the way.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     with torch.no_grad():
-        for layer in (model.block.attention.proj, model.block.ffn_out):
+        for layer in (model.blocks[0].attention.proj, model.blocks[0].ffn_out):
             layer.weight.zero_()
             layer.bias.zero_()
 
@@ -308,10 +308,53 @@ def test_both_sublayers_write_into_the_same_stream():
     assert torch.allclose(block(x, _causal_mask(6)), expected, atol=1e-6)
 
 
-def test_the_norms_receive_gradients():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+def test_the_stack_holds_n_layers_blocks():
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=3)
+    assert len(model.blocks) == 3
+
+
+def test_each_block_has_its_own_weights():
+    # Building the list as [block] * n would stack the very same block n times:
+    # the model would look deep and still have the depth of one.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=3)
+    first, second = model.blocks[0], model.blocks[1]
+    assert first.attention.query.weight is not second.attention.query.weight
+
+
+def test_every_block_is_trained():
+    # A plain list would keep the blocks out of model.parameters(), so the
+    # optimiser would never see them and they would stay at their random init —
+    # silently, since the forward pass works either way.
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=3)
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
-    for norm in (model.block.norm1, model.block.norm2, model.norm_f):
+
+    registered = {id(p) for p in model.parameters()}
+    for block in model.blocks:
+        assert all(id(p) in registered for p in block.parameters())
+        assert block.attention.query.weight.grad.abs().sum() > 0
+
+
+def test_a_deeper_stack_carries_more_parameters():
+    # The blocks are separate copies, so depth multiplies their parameters.
+    def parameters(n_layers: int) -> int:
+        model = GPT(
+            vocab_size=50,
+            block_size=8,
+            d_model=32,
+            num_heads=4,
+            ffn_multiplier=4,
+            n_layers=n_layers,
+        )
+        return sum(p.numel() for p in model.parameters())
+
+    block = parameters(2) - parameters(1)
+    assert parameters(3) == parameters(1) + 2 * block
+
+
+def test_the_norms_receive_gradients():
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
+    model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
+    for norm in (model.blocks[0].norm1, model.blocks[0].norm2, model.norm_f):
         assert norm.weight.grad.abs().sum() > 0
         assert norm.bias.grad.abs().sum() > 0
 
@@ -322,7 +365,7 @@ def test_loss_of_an_untrained_model_is_the_uniform_baseline():
     # norm keeps the head's input in scale, but the learned gain still spreads
     # the logits a little, so the loss sits slightly above the baseline.
     vocab_size = 200
-    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     ids = torch.randint(vocab_size, (16, 8))
 
     logits = model(ids)
@@ -334,7 +377,7 @@ def test_loss_of_an_untrained_model_is_the_uniform_baseline():
 def test_loss_drops_when_the_head_predicts_the_target():
     # Boosting the logit of the correct next token must lower the loss.
     vocab_size = 50
-    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     ids = torch.randint(vocab_size, (4, 8))
     targets = ids.reshape(-1)
 
@@ -348,7 +391,7 @@ def test_loss_drops_when_the_head_predicts_the_target():
 
 def test_the_head_receives_gradients():
     vocab_size = 50
-    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=vocab_size, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     ids = torch.randint(vocab_size, (4, 8))
 
     logits = model(ids)
@@ -359,7 +402,7 @@ def test_the_head_receives_gradients():
 
 
 def test_generate_extends_the_prompt():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     prompt = torch.randint(50, (1, 3))
 
     out = model.generate(prompt, max_new_tokens=5)
@@ -371,7 +414,7 @@ def test_generate_extends_the_prompt():
 def test_generate_is_deterministic():
     # Greedy decoding takes the argmax, so nothing is left to chance: the same
     # prompt through the same weights must give the very same continuation.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     prompt = torch.randint(50, (1, 3))
 
     assert torch.equal(
@@ -382,14 +425,14 @@ def test_generate_is_deterministic():
 def test_generate_slides_the_window_past_block_size():
     # The prompt alone already fills the window, and every new token pushes it
     # further; without the sliding window forward would hit its block_size assert.
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
     prompt = torch.randint(50, (1, 8))
 
     assert model.generate(prompt, max_new_tokens=4).shape == (1, 12)
 
 
 def test_generate_leaves_no_gradients_behind():
-    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4)
+    model = GPT(vocab_size=50, block_size=8, d_model=32, num_heads=4, ffn_multiplier=4, n_layers=1)
 
     out = model.generate(torch.randint(50, (1, 3)), max_new_tokens=5)
 

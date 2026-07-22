@@ -129,8 +129,8 @@ class TransformerBlock(nn.Module):
 
 class GPT(nn.Module):
     """Decoder-only language model"""
-    # Token embeddings, then one transformer block, then a final norm and
-    # logits. Position is applied inside attention as RoPE.
+    # Token embeddings, then a stack of transformer blocks, then a final norm
+    # and logits. Position is applied inside attention as RoPE.
 
     def __init__(
         self,
@@ -139,12 +139,20 @@ class GPT(nn.Module):
         d_model: int,
         num_heads: int,
         ffn_multiplier: int,
+        n_layers: int,
     ):
         super().__init__()
         self.block_size = block_size
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.block = TransformerBlock(d_model, num_heads, block_size, ffn_multiplier)
+
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(d_model, num_heads, block_size, ffn_multiplier)
+                for _ in range(n_layers)
+            ]
+        )
+
         self.norm_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
 
@@ -156,7 +164,11 @@ class GPT(nn.Module):
         )
 
         x = self.token_embedding(token_ids)
-        x = self.block(x, causal_mask(seq_len, token_ids.device))
+
+        # One mask for the whole stack: it only depends on the sequence length.
+        mask = causal_mask(seq_len, token_ids.device)
+        for block in self.blocks:
+            x = block(x, mask)
 
         # Returns (batch, seq_len, vocab_size) logits
         return self.lm_head(self.norm_f(x))
@@ -185,6 +197,7 @@ if __name__ == "__main__":
         D_MODEL,
         DATASET_PATH,
         FFN_MULTIPLIER,
+        N_LAYERS,
         NUM_HEADS,
         SEED,
     )
@@ -202,21 +215,24 @@ if __name__ == "__main__":
         d_model=D_MODEL,
         num_heads=NUM_HEADS,
         ffn_multiplier=FFN_MULTIPLIER,
+        n_layers=N_LAYERS,
     )
     logits = model(x)
 
     print(f"ids: {tuple(x.shape)} -> logits: {tuple(logits.shape)}")
     print(f"parameters: {sum(p.numel() for p in model.parameters())}")
 
-    # Attention table of the first sequence, first head: rows ask, columns answer.
-    # Untrained weights, so the point is the causal shape, not the numbers.
+    # Attention table of the first sequence, first head of the first block:
+    # rows ask, columns answer. Untrained weights, so the point is the causal
+    # shape, not the numbers.
     with torch.no_grad():
         embedded = model.token_embedding(x[:1])
-        weights = model.block.attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
+        attention = model.blocks[0].attention
+        weights = attention.weights(embedded, causal_mask(BLOCK_SIZE))[0, 0]
 
     tokens = [itos[i] for i in x[0].tolist()]
     width = 7
-    print("\nattention weights of head 0 (row attends to column):")
+    print("\nattention weights of block 0, head 0 (row attends to column):")
     print(" " * width + "".join(f"{t[:width - 1]:>{width}}" for t in tokens))
     for i, token in enumerate(tokens):
         row = "".join(

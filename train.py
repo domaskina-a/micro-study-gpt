@@ -13,6 +13,7 @@ from config.hyperparams import (
     LOG_INTERVAL,
     MAX_NEW_TOKENS,
     MAX_STEPS,
+    N_LAYERS,
     NUM_HEADS,
     PROMPT,
     SEED,
@@ -62,6 +63,7 @@ def setup_and_train():
         d_model=D_MODEL,
         num_heads=NUM_HEADS,
         ffn_multiplier=FFN_MULTIPLIER,
+        n_layers=N_LAYERS,
     )
 
     loss_fn = nn.CrossEntropyLoss()

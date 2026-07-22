@@ -14,6 +14,7 @@ from config.hyperparams import (
     DATASET_PATH,
     FFN_MULTIPLIER,
     MAX_STEPS,
+    N_LAYERS,
     NUM_HEADS,
 )
 from model import GPT
@@ -32,6 +33,7 @@ def _corpus_and_model():
         d_model=D_MODEL,
         num_heads=NUM_HEADS,
         ffn_multiplier=FFN_MULTIPLIER,
+        n_layers=N_LAYERS,
     )
     return data, stoi, itos, model
 

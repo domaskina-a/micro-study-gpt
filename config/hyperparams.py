@@ -7,6 +7,7 @@ BLOCK_SIZE = 8
 D_MODEL = 32
 NUM_HEADS = 4  # d_model is split across the heads: head_dim = 32 / 4 = 8
 FFN_MULTIPLIER = 4  # hidden width of the feed-forward layer: d_model -> d_model * 4 -> d_model
+N_LAYERS = 4  # transformer blocks stacked on top of each other
 
 # Training
 BATCH_SIZE = 4
