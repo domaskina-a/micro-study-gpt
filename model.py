@@ -111,9 +111,9 @@ class TransformerBlock(nn.Module):
         self, d_model: int, num_heads: int, block_size: int, ffn_multiplier: int
     ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
+        self.norm1 = nn.RMSNorm(d_model)
         self.attention = CausalSelfAttention(d_model, num_heads, block_size)
-        self.norm2 = nn.LayerNorm(d_model)
+        self.norm2 = nn.RMSNorm(d_model)
         self.ffn_in = nn.Linear(d_model, d_model * ffn_multiplier)
         self.ffn_out = nn.Linear(d_model * ffn_multiplier, d_model)
 
@@ -153,7 +153,7 @@ class GPT(nn.Module):
             ]
         )
 
-        self.norm_f = nn.LayerNorm(d_model)
+        self.norm_f = nn.RMSNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:

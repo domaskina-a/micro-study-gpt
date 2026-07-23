@@ -2,7 +2,6 @@ import math
 
 import pytest
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from model import GPT, CausalSelfAttention, RotaryPositionalEmbedding, TransformerBlock
@@ -254,24 +253,6 @@ def test_ffn_receives_gradients():
     assert model.blocks[0].ffn_out.weight.grad.abs().sum() > 0
 
 
-def test_layernorm_matches_the_formula():
-    # nn.LayerNorm does the work, but the formula is what the step is about:
-    # centre each token vector over its own features, scale to unit variance,
-    # then apply the learned gain and shift. Randomised so the affine part is
-    # actually exercised instead of the identity it starts as.
-    norm = nn.LayerNorm(32)
-    with torch.no_grad():
-        norm.weight.normal_()
-        norm.bias.normal_()
-
-    x = torch.randn(4, 8, 32)
-    centred = x - x.mean(dim=-1, keepdim=True)
-    variance = x.var(dim=-1, keepdim=True, unbiased=False)
-    expected = centred / torch.sqrt(variance + norm.eps) * norm.weight + norm.bias
-
-    assert torch.allclose(norm(x), expected, atol=1e-6)
-
-
 def test_silent_sublayers_leave_the_residual_stream_untouched():
     # Zeroing both sublayer outputs turns each line of the block into x = x + 0,
     # so the embeddings must reach the head unchanged. Catches a dropped
@@ -356,7 +337,6 @@ def test_the_norms_receive_gradients():
     model(torch.zeros(4, 8, dtype=torch.long)).sum().backward()
     for norm in (model.blocks[0].norm1, model.blocks[0].norm2, model.norm_f):
         assert norm.weight.grad.abs().sum() > 0
-        assert norm.bias.grad.abs().sum() > 0
 
 
 def test_loss_of_an_untrained_model_is_the_uniform_baseline():
